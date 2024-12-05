@@ -10,6 +10,63 @@ from pydub.playback import play
 # ETRI API 키 (공백 삭제 후 사용)
 API_KEY = "067ea6f9-1715-43ab-814f-e23876886b9b"
 
+engine = pyttsx3.init()
+
+# TTS 설정 (예: 한국어)
+engine.setProperty('rate', 150)  # 속도 설정
+engine.setProperty('volume', 1)  # 볼륨 설정
+engine.setProperty('language', 'ko')
+
+# 표준 발음으로 변환할 텍스트
+text = "안녕하세요"
+
+# 표준 발음 파일 경로 설정
+REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
+
+# TTS로 음성 파일 저장
+engine.save_to_file(text, REFERENCE_AUDIO_PATH)
+engine.runAndWait()  # 음성 파일 저장 후 대기
+
+if os.path.exists(REFERENCE_AUDIO_PATH):
+    print(f"표준 발음 파일이 저장되었습니다: {REFERENCE_AUDIO_PATH}")
+else:
+    print("표준 발음 파일이 저장되지 않았습니다.")
+
+
+# 음성 인식 설정
+recognizer = sr.Recognizer()
+microphone = sr.Microphone()
+
+#음성 인식
+def recognize_speech_from_mic():
+    """실시간으로 마이크에서 음성을 받아 텍스트로 변환 및 저장"""
+    with microphone as source:
+        print("말씀해주세요...")
+        recognizer.adjust_for_ambient_noise(source)  # 주변 소음 조정
+        audio = recognizer.listen(source)  # 음성을 들음
+
+    try:
+        print("음성을 녹음 중...")
+        # 녹음된 오디오를 파일로 저장
+        audio_path = "user_audio.wav"
+        with open(audio_path, "wb") as f:
+            f.write(audio.get_wav_data())
+        return audio_path
+    except Exception as e:
+        print(f"오디오 저장 중 오류 발생: {e}")
+        return None
+
+# 표준 발음 재생
+def play_standard_pronunciation():
+    if os.path.exists(REFERENCE_AUDIO_PATH):
+        print("표준 발음을 재생합니다...")
+        audio = AudioSegment.from_file(REFERENCE_AUDIO_PATH)
+        play(audio)
+    else:
+        print("표준 발음 파일이 없습니다. 생성 후 재생하세요.")
+
+
+#API로 텍스트 발음교정
 def transcribe_with_etri(audio_path, script=""):
     # ETRI API URL (한국어 발음 평가 API)
     url = "http://aiopen.etri.re.kr:8000/WiseASR/PronunciationKor"
@@ -50,61 +107,7 @@ def transcribe_with_etri(audio_path, script=""):
         print(f"HTTP 요청 실패: 상태 코드 {response.status_code}")
         print(f"응답 본문: {response.text}")
         return None
-
-engine = pyttsx3.init()
-
-# TTS 설정 (예: 한국어)
-engine.setProperty('rate', 150)  # 속도 설정
-engine.setProperty('volume', 1)  # 볼륨 설정
-engine.setProperty('language', 'ko')
-
-# 표준 발음으로 변환할 텍스트
-text = "안녕하세요"
-
-# 표준 발음 파일 경로 설정
-REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
-
-# TTS로 음성 파일 저장
-engine.save_to_file(text, REFERENCE_AUDIO_PATH)
-engine.runAndWait()  # 음성 파일 저장 후 대기
-
-# 표준 발음 재생
-def play_standard_pronunciation():
-    if os.path.exists(REFERENCE_AUDIO_PATH):
-        print("표준 발음을 재생합니다...")
-        audio = AudioSegment.from_file(REFERENCE_AUDIO_PATH)
-        play(audio)
-    else:
-        print("표준 발음 파일이 없습니다. 생성 후 재생하세요.")
-
-
-if os.path.exists(REFERENCE_AUDIO_PATH):
-    print(f"표준 발음 파일이 저장되었습니다: {REFERENCE_AUDIO_PATH}")
-else:
-    print("표준 발음 파일이 저장되지 않았습니다.")
-
-# 음성 인식 설정
-recognizer = sr.Recognizer()
-microphone = sr.Microphone()
-
-def recognize_speech_from_mic():
-    """실시간으로 마이크에서 음성을 받아 텍스트로 변환 및 저장"""
-    with microphone as source:
-        print("말씀해주세요...")
-        recognizer.adjust_for_ambient_noise(source)  # 주변 소음 조정
-        audio = recognizer.listen(source)  # 음성을 들음
-
-    try:
-        print("음성을 녹음 중...")
-        # 녹음된 오디오를 파일로 저장
-        audio_path = "user_audio.wav"
-        with open(audio_path, "wb") as f:
-            f.write(audio.get_wav_data())
-        return audio_path
-    except Exception as e:
-        print(f"오디오 저장 중 오류 발생: {e}")
-        return None
-
+    
 # 사용자 발음 평가
 def evaluate_pronunciation():
     # 사용자 발음 녹음
