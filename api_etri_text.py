@@ -6,6 +6,10 @@ import json
 import base64
 from pydub import AudioSegment
 from pydub.playback import play
+import librosa
+import numpy as np
+from scipy.spatial.distance import cosine
+from dtw import accelerated_dtw
 
 # ETRI API 키 (공백 삭제 후 사용)
 API_KEY = "067ea6f9-1715-43ab-814f-e23876886b9b"
@@ -64,6 +68,26 @@ def play_standard_pronunciation():
         play(audio)
     else:
         print("표준 발음 파일이 없습니다. 생성 후 재생하세요.")
+
+
+# MFCC 추출 함수
+def extract_mfcc(audio_path, sr=16000):
+    y, _ = librosa.load(audio_path, sr=sr)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    return mfcc
+
+# MFCC 비교 함수
+def compare_mfcc(reference_mfcc, user_mfcc):
+    # 각 MFCC 평균값으로 비교
+    ref_mean = np.mean(reference_mfcc, axis=1)
+    user_mean = np.mean(user_mfcc, axis=1)
+    similarity = 1 - cosine(ref_mean, user_mean)
+    return similarity
+
+# DTW(Dynamic Time Warping)
+def compare_mfcc_with_dtw(reference_mfcc, user_mfcc):
+    dist, _, _, _ = accelerated_dtw(reference_mfcc.T, user_mfcc.T, dist='euclidean')
+    return dist
 
 
 #API로 텍스트 발음교정
@@ -133,6 +157,16 @@ def evaluate_pronunciation():
             print("발음 교정을 위한 텍스트 변환에 실패했습니다.")
     else:
         print("사용자 음성 녹음에 실패했습니다.")
+
+     # 표준 발음과 사용자 발음의 MFCC 비교
+    ref_mfcc = extract_mfcc(REFERENCE_AUDIO_PATH)
+    user_mfcc = extract_mfcc(processed_audio_path)
+    similarity = compare_mfcc(ref_mfcc, user_mfcc)
+    dtw_distance = compare_mfcc_with_dtw(ref_mfcc, user_mfcc)
+
+    print(f"발음 유사도 (MFCC 기반): {similarity * 100:.2f}%")
+    print(f"발음 유사도 (DTW 기반 거리): {dtw_distance:.2f}")
+    
     play_standard_pronunciation()
 
 # 발음 교정 실행
