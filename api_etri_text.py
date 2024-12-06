@@ -74,14 +74,20 @@ def play_standard_pronunciation():
 def extract_mfcc(audio_path, sr=16000):
     y, _ = librosa.load(audio_path, sr=sr)
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-    return mfcc
+    # MFCC의 평균 및 표준편차로 벡터화
+    mfcc_mean = np.mean(mfcc, axis=1)
+    mfcc_std = np.std(mfcc, axis=1)
+
+    # MFCC를 벡터화한 결과
+    mfcc_vector = np.concatenate((mfcc_mean, mfcc_std))
+    
+    return mfcc_vector
+
 
 # MFCC 비교 함수
 def compare_mfcc(reference_mfcc, user_mfcc):
-    # 각 MFCC 평균값으로 비교
-    ref_mean = np.mean(reference_mfcc, axis=1)
-    user_mean = np.mean(user_mfcc, axis=1)
-    similarity = 1 - cosine(ref_mean, user_mean)
+    
+    similarity = 1 - cosine(reference_mfcc, user_mfcc)
     return similarity
 
 # DTW(Dynamic Time Warping)
@@ -89,7 +95,7 @@ def compare_mfcc_with_dtw(reference_mfcc, user_mfcc):
     dist, _, _, _ = accelerated_dtw(reference_mfcc.T, user_mfcc.T, dist='euclidean')
     return dist
 
-
+    
 #API로 텍스트 발음교정
 def transcribe_with_etri(audio_path, script=""):
     # ETRI API URL (한국어 발음 평가 API)
@@ -164,7 +170,7 @@ def evaluate_pronunciation():
     similarity = compare_mfcc(ref_mfcc, user_mfcc)
     dtw_distance = compare_mfcc_with_dtw(ref_mfcc, user_mfcc)
 
-    print(f"발음 유사도 (MFCC 기반): {similarity * 100:.2f}%")
+    print(f"MFCC 벡터 간 유사도: {similarity * 100:.2f}%")
     print(f"발음 유사도 (DTW 기반 거리): {dtw_distance:.2f}")
     
     play_standard_pronunciation()
