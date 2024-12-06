@@ -86,7 +86,7 @@ def extract_mfcc(audio_path, sr=16000):
 
 # MFCC 비교 함수
 def compare_mfcc(reference_mfcc, user_mfcc):
-    
+
     similarity = 1 - cosine(reference_mfcc, user_mfcc)
     return similarity
 
