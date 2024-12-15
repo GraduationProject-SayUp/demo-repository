@@ -156,19 +156,24 @@ class Model(BaseModel):
         lcs_score = Model.lcs(reference_text, user_text)
 
         # 가중치 설정
-        syllable_weight = 0.2
-        character_weight = 0.2
+        syllable_weight = 0.1
+        character_weight = 0.1
         jamo_weight = 0.2
-        missing_weight = 0.2
-        lcs_weight = 0.2
+        missing_weight = 0.1
+        lcs_weight = 0.5
 
-        # 점수 계산
-        total_score = (syllable_accuracy * syllable_weight) + \
-                      (character_accuracy * character_weight) + \
-                      ((100 - jamo_dtw) * jamo_weight) - \
-                      (missing_syllables * missing_weight) + \
-                      (lcs_score * lcs_weight)
-
+        # 점수를 100점 만점으로 정규화하여 계산
+        syllable_score = syllable_accuracy  # 음절 정확도는 이미 100점 만점으로 계산됨
+        character_score = character_accuracy  # 문자 정확도도 마찬가지
+        jamo_score = 100 - jamo_dtw  # DTW의 결과는 낮을수록 정확도 높으므로 100에서 빼기
+        missing_score = max(0, 100 - (missing_syllables * 10))  # 음절 누락은 누락된 수에 비례하여 점수 차감 (누락이 많을수록 점수 낮아짐)
+        lcs_score = (lcs_score / len(reference_text)) * 100  # LCS 길이를 기준으로 비율로 계산
+        # 최종 점수 계산
+        total_score = (syllable_score * syllable_weight) + \
+                    (character_score * character_weight) + \
+                    (jamo_score * jamo_weight) + \
+                    (missing_score * missing_weight) + \
+                    (lcs_score * lcs_weight)
         return total_score
     # API로 텍스트 발음교정
     @staticmethod

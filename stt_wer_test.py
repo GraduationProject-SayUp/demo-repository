@@ -168,29 +168,33 @@ def lcs(X, Y):
     
     return dp[m][n]
 def calculate_score(reference_text, user_text):
-        """전체 점수를 계산"""
-        # 각 방법에 대한 점수 계산
-        syllable_accuracy = compare_text_by_syllables(reference_text, user_text)
-        character_accuracy = compare_text_by_characters(reference_text, user_text)
-        jamo_dtw = compare_jamo_dtw(reference_text, user_text)
-        missing_syllables = compare_syllables(reference_text, user_text)
-        lcs_score = lcs(reference_text, user_text)
+    """전체 점수를 계산"""
+    # 각 방법에 대한 점수 계산
+    syllable_accuracy = compare_text_by_syllables(reference_text, user_text)
+    character_accuracy = compare_text_by_characters(reference_text, user_text)
+    jamo_dtw = compare_jamo_dtw(reference_text, user_text)
+    missing_syllables = compare_syllables(reference_text, user_text)
+    lcs_score = lcs(reference_text, user_text)
+ # 가중치 설정
+    syllable_weight = 0.1
+    character_weight = 0.1
+    jamo_weight = 0.2
+    missing_weight = 0.1
+    lcs_weight = 0.5
 
-        # 가중치 설정
-        syllable_weight = 0.2
-        character_weight = 0.2
-        jamo_weight = 0.2
-        missing_weight = 0.2
-        lcs_weight = 0.2
-
-        # 점수 계산
-        total_score = (syllable_accuracy * syllable_weight) + \
-                      (character_accuracy * character_weight) + \
-                      ((100 - jamo_dtw) * jamo_weight) - \
-                      (missing_syllables * missing_weight) + \
-                      (lcs_score * lcs_weight)
-
-        return total_score
+    # 점수를 100점 만점으로 정규화하여 계산
+    syllable_score = syllable_accuracy  # 음절 정확도는 이미 100점 만점으로 계산됨
+    character_score = character_accuracy  # 문자 정확도도 마찬가지
+    jamo_score = 100 - jamo_dtw  # DTW의 결과는 낮을수록 정확도 높으므로 100에서 빼기
+    missing_score = max(0, 100 - (missing_syllables * 10))  # 음절 누락은 누락된 수에 비례하여 점수 차감 (누락이 많을수록 점수 낮아짐)
+    lcs_score = (lcs_score / len(reference_text)) * 100  # LCS 길이를 기준으로 비율로 계산
+    # 최종 점수 계산
+    total_score = (syllable_score * syllable_weight) + \
+                  (character_score * character_weight) + \
+                  (jamo_score * jamo_weight) + \
+                  (missing_score * missing_weight) + \
+                  (lcs_score * lcs_weight)
+    return total_score
 #음성 인식
 def recognize_speech_from_mic():
     """실시간으로 마이크에서 음성을 받아 텍스트로 변환 및 저장"""
