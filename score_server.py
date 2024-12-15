@@ -11,15 +11,13 @@ from scipy.spatial.distance import cosine
 from dtw import accelerated_dtw
 from jiwer import wer
 import re
-<<<<<<< HEAD
 from fastapi import FastAPI, File, UploadFile, Form
-=======
-from fastapi import FastAPI, File, UploadFile
->>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
 from fastapi.responses import JSONResponse
 import asyncio
 from pydantic import BaseModel
 import httpx  # 비동기 HTTP 요청을 위해 httpx 사용
+import hgtk  # 한글 초성, 중성, 종성 분해용
+from difflib import SequenceMatcher
 
 app = FastAPI()
 
@@ -33,46 +31,145 @@ engine.setProperty('rate', 150)  # 속도 설정
 engine.setProperty('volume', 1)  # 볼륨 설정
 engine.setProperty('language', 'ko')
 
-<<<<<<< HEAD
 # 표준 발음 파일 경로 설정
 REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
 
-=======
-# 표준 발음으로 변환할 텍스트
-text = "안녕하세요반갑습니다"
-
-# 표준 발음 파일 경로 설정
-REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
-
-# TTS로 음성 파일 저장
-engine.save_to_file(text, REFERENCE_AUDIO_PATH)
-engine.runAndWait()  # 음성 파일 저장 후 대기
-
-if os.path.exists(REFERENCE_AUDIO_PATH):
-    print(f"표준 발음 파일이 저장되었습니다: {REFERENCE_AUDIO_PATH}")
-else:
-    print("표준 발음 파일이 저장되지 않았습니다.")
-
->>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
 # 음성 인식 설정
 recognizer = sr.Recognizer()
 microphone = sr.Microphone()
 
 class Model(BaseModel):
     file_path: str
-<<<<<<< HEAD
     text: str  # text를 프론트에서 입력받을 수 있도록 수정
 
-=======
-    
->>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
     @staticmethod
     def remove_spaces_and_punctuation(text):
         """텍스트에서 공백과 마침표, 쉼표 등 특수문자 제거"""
         cleaned_text = re.sub(r'[^\w\s]', '', text)  # 알파벳, 숫자, 공백 외의 문자 제거
         cleaned_text = cleaned_text.replace(" ", "")  # 공백 제거
         return cleaned_text
+    @staticmethod
+    def split_text_to_characters(text):
+        """텍스트를 한 글자 단위로 분할"""
+        return list(text)
+    
+    @staticmethod
+    def compare_text_by_characters(reference_text, user_text):
+        """한 글자 단위로 비교"""
+        reference_chars = Model.split_text_to_characters(reference_text)
+        user_chars = Model.split_text_to_characters(user_text)
+        
+        # 글자 단위 비교
+        match_count = sum(1 for r, u in zip(reference_chars, user_chars) if r == u)
+        total_chars = max(len(reference_chars), len(user_chars))
+        accuracy = match_count / total_chars * 100
+        return accuracy
+    
+    @staticmethod
+    def compare_text_by_syllables(reference_text, user_text):
+        """음절 단위 비교"""
+        matcher = SequenceMatcher(None, reference_text, user_text)
+        ratio = matcher.ratio() * 100  # 유사도 비율
+        return ratio
+    
+    @staticmethod
+    def split_to_jamo(text):
+        """한글 텍스트를 초성, 중성, 종성으로 분해"""
+        jamo_list = []
+        for char in text:
+            if hgtk.checker.is_hangul(char):  # 한글인지 확인
+                jamo_list.extend(hgtk.letter.decompose(char))
+            else:
+                jamo_list.append(char)  # 한글이 아니면 그대로 추가
+        return jamo_list
+    
+    @staticmethod
+    def jamo_distance(jamo1, jamo2):
+        """자음/모음 간의 거리: 같은 경우 0, 비슷한 경우 0.5, 다른 경우 1"""
+        similar_vowels = [
+            ("ㅓ", "ㅔ"), ("ㅐ", "ㅔ"), ("ㅗ", "ㅜ"), ("ㅑ", "ㅕ"), ("ㅛ", "ㅠ")
+        ]
+        similar_consonants = [
+            ("ㄱ", "ㅋ"), ("ㄷ", "ㅌ"), ("ㅂ", "ㅍ"), ("ㅅ", "ㅆ"), ("ㅈ", "ㅊ")
+        ]
+        if jamo1 == jamo2:
+            return 0
+        if (jamo1, jamo2) in similar_vowels or (jamo2, jamo1) in similar_vowels:
+            return 0.5
+        if (jamo1, jamo2) in similar_consonants or (jamo2, jamo1) in similar_consonants:
+            return 0.5
+        return 1
+    
+    @staticmethod
+    def compare_jamo_dtw(reference_text, user_text):
+        """DTW를 사용해 자음/모음 비교"""
+        ref_jamo = Model.split_to_jamo(reference_text)
+        user_jamo = Model.split_to_jamo(user_text)
 
+        ref_jamo_np = np.array(ref_jamo).reshape(-1, 1)
+        user_jamo_np = np.array(user_jamo).reshape(-1, 1)
+
+        dist, _, _, _ = accelerated_dtw(ref_jamo_np, user_jamo_np, dist=lambda x, y: Model.jamo_distance(x[0], y[0]))
+        return dist
+    
+    @staticmethod
+    def compare_syllables(reference_text, user_text):
+        """음절 단위로 비교해 누락된 부분 확인"""
+        ref_syllables = list(reference_text)
+        user_syllables = list(user_text)
+        
+        missing_syllables = []
+        user_index = 0
+
+        for ref_syllable in ref_syllables:
+            if user_index < len(user_syllables) and user_syllables[user_index] == ref_syllable:
+                user_index += 1
+            else:
+                missing_syllables.append(ref_syllable)
+
+        missing_count = len(missing_syllables)
+        return missing_count
+    
+    @staticmethod
+    def lcs(X, Y):
+        """LCS (최대 공통 부분 수열)을 구하는 함수"""
+        m = len(X)
+        n = len(Y)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if X[i - 1] == Y[j - 1]:
+                    dp[i][j] = dp[i - 1][j - 1] + 1
+                else:
+                    dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+        
+        return dp[m][n]
+    @staticmethod
+    def calculate_score(reference_text, user_text):
+        """전체 점수를 계산"""
+        # 각 방법에 대한 점수 계산
+        syllable_accuracy = Model.compare_text_by_syllables(reference_text, user_text)
+        character_accuracy = Model.compare_text_by_characters(reference_text, user_text)
+        jamo_dtw = Model.compare_jamo_dtw(reference_text, user_text)
+        missing_syllables = Model.compare_syllables(reference_text, user_text)
+        lcs_score = Model.lcs(reference_text, user_text)
+
+        # 가중치 설정
+        syllable_weight = 0.2
+        character_weight = 0.2
+        jamo_weight = 0.2
+        missing_weight = 0.2
+        lcs_weight = 0.2
+
+        # 점수 계산
+        total_score = (syllable_accuracy * syllable_weight) + \
+                      (character_accuracy * character_weight) + \
+                      ((100 - jamo_dtw) * jamo_weight) - \
+                      (missing_syllables * missing_weight) + \
+                      (lcs_score * lcs_weight)
+
+        return total_score
     # API로 텍스트 발음교정
     @staticmethod
     async def transcribe_with_etri(file_path, script=""):
@@ -118,11 +215,7 @@ class Model(BaseModel):
             return None
 
 @app.post("/evaluate-pronunciation")
-<<<<<<< HEAD
 async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(...)):
-=======
-async def evaluate_pronunciation(file: UploadFile = File(...)):
->>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
     # 업로드된 파일을 서버에 임시 저장
     try:
         file_path = f"temp_{file.filename}"
@@ -146,15 +239,16 @@ async def evaluate_pronunciation(file: UploadFile = File(...)):
         
         if recognized_text:
             cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text)
-            error_rate = wer(text, cleaned_recognized_text)
+            total_score = Model.calculate_score(text, cleaned_recognized_text)
+
             print(f"인식된 텍스트: {cleaned_recognized_text}")
 
-            if cleaned_recognized_text == text:
+            if total_score >= 90:
                 # 발음이 정확한 경우
-                return JSONResponse(content={"message": f"발음이 정확합니다. error rate: {error_rate}"})
+                return JSONResponse(content={"message": f"발음이 정확합니다. 점수: {total_score:.2f}"})
             else:
                 # 발음에 차이가 있는 경우
-                return JSONResponse(content={"message": f"발음에 차이가 있습니다. 표준 발음: {text}, 사용자 발음: {cleaned_recognized_text}, error rate: {error_rate}"})
+                return JSONResponse(content={"message": f"발음에 차이가 있습니다. 표준 발음: {text}, 사용자 발음: {cleaned_recognized_text}, 점수: {total_score:.2f}"})
         else:
             return JSONResponse(content={"message": "발음 교정을 위한 텍스트 변환에 실패했습니다."})
     else:
