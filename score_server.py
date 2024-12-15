@@ -11,7 +11,11 @@ from scipy.spatial.distance import cosine
 from dtw import accelerated_dtw
 from jiwer import wer
 import re
+<<<<<<< HEAD
 from fastapi import FastAPI, File, UploadFile, Form
+=======
+from fastapi import FastAPI, File, UploadFile
+>>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
 from fastapi.responses import JSONResponse
 import asyncio
 from pydantic import BaseModel
@@ -29,17 +33,39 @@ engine.setProperty('rate', 150)  # 속도 설정
 engine.setProperty('volume', 1)  # 볼륨 설정
 engine.setProperty('language', 'ko')
 
+<<<<<<< HEAD
 # 표준 발음 파일 경로 설정
 REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
 
+=======
+# 표준 발음으로 변환할 텍스트
+text = "안녕하세요반갑습니다"
+
+# 표준 발음 파일 경로 설정
+REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
+
+# TTS로 음성 파일 저장
+engine.save_to_file(text, REFERENCE_AUDIO_PATH)
+engine.runAndWait()  # 음성 파일 저장 후 대기
+
+if os.path.exists(REFERENCE_AUDIO_PATH):
+    print(f"표준 발음 파일이 저장되었습니다: {REFERENCE_AUDIO_PATH}")
+else:
+    print("표준 발음 파일이 저장되지 않았습니다.")
+
+>>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
 # 음성 인식 설정
 recognizer = sr.Recognizer()
 microphone = sr.Microphone()
 
 class Model(BaseModel):
     file_path: str
+<<<<<<< HEAD
     text: str  # text를 프론트에서 입력받을 수 있도록 수정
 
+=======
+    
+>>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
     @staticmethod
     def remove_spaces_and_punctuation(text):
         """텍스트에서 공백과 마침표, 쉼표 등 특수문자 제거"""
@@ -92,7 +118,11 @@ class Model(BaseModel):
             return None
 
 @app.post("/evaluate-pronunciation")
+<<<<<<< HEAD
 async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(...)):
+=======
+async def evaluate_pronunciation(file: UploadFile = File(...)):
+>>>>>>> 324dab53e4b2d158a509b5c5d616c780a248b4c0
     # 업로드된 파일을 서버에 임시 저장
     try:
         file_path = f"temp_{file.filename}"
