@@ -221,48 +221,52 @@ class Model(BaseModel):
 
 @app.post("/evaluate-pronunciation")
 async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(...)):
-    # 업로드된 파일을 서버에 임시 저장
     try:
-        file_path = f"temp_{file.filename}"
+        # 업로드된 파일 저장
+        file_path = os.path.join(os.getcwd(), f"temp_{file.filename}")
         with open(file_path, "wb") as f:
             f.write(await file.read())
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"파일 저장에 실패했습니다. {str(e)}"})
-    
-    # 오디오 파일 처리 (샘플링 레이트 16000Hz로 설정)
-    try:
-        processed_audio_path = "user_audio_processed.wav"
+        processed_audio_path = os.path.join(os.getcwd(), "user_audio_processed.wav")
+
+        # 오디오 파일 처리 (샘플링 레이트 16000Hz로 설정)
         audio = AudioSegment.from_file(file_path)
         audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio.export(processed_audio_path, format="wav")
     except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"오디오 파일 처리에 실패했습니다. {str(e)}"})
+        return JSONResponse(status_code=500, content={"message": f"파일 저장 또는 처리 실패: {str(e)}"})
 
-    if processed_audio_path:
-        # ETRI API를 통한 음성 텍스트 변환
-        recognized_text = await Model.transcribe_with_etri(processed_audio_path)
-        
-        if recognized_text:
-            cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text)
-            total_score = Model.calculate_score(text, cleaned_recognized_text)
+    # ETRI API로 음성 텍스트 변환
+    recognized_text = await Model.transcribe_with_etri(processed_audio_path)
 
-            print(f"인식된 텍스트: {cleaned_recognized_text}")
+    if recognized_text:
+        cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text)
+        text = Model.remove_spaces_and_punctuation(text)
+        total_score = Model.calculate_score(text, cleaned_recognized_text)
 
-            if total_score >= 90:
-                # 발음이 정확한 경우
-                return JSONResponse(content={"message": f"발음이 정확합니다. 점수: {total_score:.2f}"})
-            else:
-                # 발음에 차이가 있는 경우
-                return JSONResponse(content={"message": f"발음에 차이가 있습니다. 표준 발음: {text}, 사용자 발음: {cleaned_recognized_text}, 점수: {total_score:.2f}"})
-        else:
-            return JSONResponse(content={"message": "발음 교정을 위한 텍스트 변환에 실패했습니다."})
+        # 피드백 생성
+        missing_syllables = Model.compare_syllables(text, cleaned_recognized_text)
+        missing_feedback = (
+            f"누락된 음절: {missing_syllables}개" if missing_syllables > 0 else "음절 누락이 없습니다."
+        )
+        feedback_message = {
+            "original_text": text,
+            "recognized_text": cleaned_recognized_text,
+            "missing_feedback": missing_feedback,
+            "score": total_score,
+        }
+
+        # 점수와 피드백 반환
+        response_content = {
+            "message": "발음 평가 결과입니다.",
+            "score": total_score,
+            "feedback": feedback_message
+        }
+
+        return JSONResponse(content=response_content)
     else:
-        print("")
-
-    os.remove(file_path)  # 처리 후 임시 파일 삭제
-    os.remove(processed_audio_path)  # 처리 후 임시 파일 삭제
-
-    return {"message": "발음 평가 완료!"}
+        os.remove(file_path)
+        os.remove(processed_audio_path)
+        return JSONResponse(content={"message": "발음 교정을 위한 텍스트 변환에 실패했습니다."})    
 
 if __name__ == "__main__":
     import uvicorn
