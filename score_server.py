@@ -18,6 +18,7 @@ from pydantic import BaseModel
 import httpx  # 비동기 HTTP 요청을 위해 httpx 사용
 import hgtk  # 한글 초성, 중성, 종성 분해용
 from difflib import SequenceMatcher
+from g2pk import G2p
 
 app = FastAPI()
 
@@ -37,17 +38,36 @@ REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
 # 음성 인식 설정
 recognizer = sr.Recognizer()
 microphone = sr.Microphone()
+g2p = G2p()
 
 class Model(BaseModel):
     file_path: str
     text: str  # text를 프론트에서 입력받을 수 있도록 수정
 
     @staticmethod
+    def get_g2p_pronunciation(text):
+        """주어진 텍스트의 표준 발음을 G2P 변환하여 반환"""
+        return g2p(text)  # "안녕하세요" → "안녕하세오" (연음, 두음법칙 적용 가능)
+
+    @staticmethod
+    def compare_pronunciation(reference_pronunciation, user_pronunciation):
+        """G2P 변환된 발음과 사용자의 발음을 비교"""
+        ref_jamo = Model.split_to_jamo(reference_pronunciation)
+        user_jamo = Model.split_to_jamo(user_pronunciation)
+
+        feedback = []
+        for i, (ref, user) in enumerate(zip(ref_jamo, user_jamo)):
+            if ref != user:
+                feedback.append(f"{i+1}번째 발음 차이: 표준 '{ref}' vs 사용 '{user}'")
+
+        return feedback
+    @staticmethod
     def remove_spaces_and_punctuation(text):
         """텍스트에서 공백과 마침표, 쉼표 등 특수문자 제거"""
         cleaned_text = re.sub(r'[^\w\s]', '', text)  # 알파벳, 숫자, 공백 외의 문자 제거
         cleaned_text = cleaned_text.replace(" ", "")  # 공백 제거
         return cleaned_text
+    
     @staticmethod
     def split_text_to_characters(text):
         """텍스트를 한 글자 단위로 분할"""
@@ -114,22 +134,22 @@ class Model(BaseModel):
     
     @staticmethod
     def compare_syllables(reference_text, user_text):
-        """음절 단위로 비교해 누락된 부분 확인"""
+        """음절 단위로 비교하여 누락된 부분 확인"""
         ref_syllables = list(reference_text)
         user_syllables = list(user_text)
+
+
+        # 길이가 같으면 누락 없음 처리
+        if len(ref_syllables) == len(user_syllables):
+            return 0
         
-        missing_syllables = []
-        user_index = 0
-
-        for ref_syllable in ref_syllables:
-            if user_index < len(user_syllables) and user_syllables[user_index] == ref_syllable:
-                user_index += 1
-            else:
-                missing_syllables.append(ref_syllable)
-
-        missing_count = len(missing_syllables)
-        return missing_count
-    
+        # LCS로 최대 공통 부분 수열 계산
+        lcs_length = Model.lcs(ref_syllables, user_syllables)
+        
+        # 누락된 음절 수 = 원래 음절 수 - LCS 길이
+        missing_syllables = len(ref_syllables) - lcs_length
+        
+        return missing_syllables
     @staticmethod
     def lcs(X, Y):
         """LCS (최대 공통 부분 수열)을 구하는 함수"""
@@ -146,6 +166,27 @@ class Model(BaseModel):
         
         return dp[m][n]
     @staticmethod
+    def compare_jamo_feedback(reference_text, user_text):
+        """초성, 중성, 종성을 비교하여 잘못 발음된 음절 피드백 제공"""
+        ref_jamo = Model.split_to_jamo(reference_text)
+        user_jamo = Model.split_to_jamo(user_text)
+        
+        feedback = []
+        for i, (ref, user) in enumerate(zip(ref_jamo, user_jamo)):
+            if ref != user:
+                # 유사 발음 체크
+                similar_vowels = [("ㅓ", "ㅔ"), ("ㅐ", "ㅔ"), ("ㅗ", "ㅜ"), ("ㅑ", "ㅕ"), ("ㅛ", "ㅠ")]
+                similar_consonants = [("ㄱ", "ㅋ"), ("ㄷ", "ㅌ"), ("ㅂ", "ㅍ"), ("ㅅ", "ㅆ"), ("ㅈ", "ㅊ")]
+
+                if (ref, user) in similar_vowels or (user, ref) in similar_vowels:
+                    feedback.append(f"{i+1}번째 음절: '{ref}' 발음을 '{user}'로 잘못 발음 (유사 모음)")
+                elif (ref, user) in similar_consonants or (user, ref) in similar_consonants:
+                    feedback.append(f"{i+1}번째 음절: '{ref}' 발음을 '{user}'로 잘못 발음 (유사 자음)")
+                else:
+                    feedback.append(f"{i+1}번째 음절: '{ref}' 발음을 '{user}'로 잘못 발음")
+        return feedback
+
+    @staticmethod
     def calculate_score(reference_text, user_text):
         """전체 점수를 계산"""
         # 각 방법에 대한 점수 계산
@@ -154,13 +195,13 @@ class Model(BaseModel):
         jamo_dtw = Model.compare_jamo_dtw(reference_text, user_text)
         missing_syllables = Model.compare_syllables(reference_text, user_text)
         lcs_score = Model.lcs(reference_text, user_text)
-
+       
         # 가중치 설정
         syllable_weight = 0.1
         character_weight = 0.1
-        jamo_weight = 0.2
-        missing_weight = 0.1
-        lcs_weight = 0.5
+        jamo_weight = 0.45
+        missing_weight = 0.05
+        lcs_weight = 0.30
 
         # 점수를 100점 만점으로 정규화하여 계산
         syllable_score = syllable_accuracy  # 음절 정확도는 이미 100점 만점으로 계산됨
@@ -241,6 +282,13 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
     if recognized_text:
         cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text)
         text = Model.remove_spaces_and_punctuation(text)
+
+        # **G2P 변환 적용**
+        reference_pronunciation = Model.get_g2p_pronunciation(text)
+        user_pronunciation = Model.get_g2p_pronunciation(cleaned_recognized_text)
+
+        g2p_feedback = Model.compare_pronunciation(reference_pronunciation, user_pronunciation)
+
         total_score = Model.calculate_score(text, cleaned_recognized_text)
 
         # 피드백 생성
@@ -248,11 +296,20 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
         missing_feedback = (
             f"누락된 음절: {missing_syllables}개" if missing_syllables > 0 else "음절 누락이 없습니다."
         )
+
+        # 모음/자음 오류 피드백
+        jamo_feedback = Model.compare_jamo_feedback(text, cleaned_recognized_text)
+        jamo_feedback_str = "\n".join(jamo_feedback) if jamo_feedback else "모음/자음 발음 오류가 없습니다."
+
+        print(jamo_feedback)
         feedback_message = {
             "original_text": text,
             "recognized_text": cleaned_recognized_text,
             "missing_feedback": missing_feedback,
             "score": total_score,
+            "g2p_feedback": g2p_feedback,
+            "jamo_feedback": jamo_feedback,
+           
         }
 
         # 점수와 피드백 반환
