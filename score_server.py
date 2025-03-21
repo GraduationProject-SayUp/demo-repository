@@ -289,7 +289,7 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
 
         g2p_feedback = Model.compare_pronunciation(reference_pronunciation, user_pronunciation)
 
-        total_score = Model.calculate_score(text, cleaned_recognized_text)
+        total_score = Model.calculate_score(g2p(text), g2p(cleaned_recognized_text))
 
         # 피드백 생성
         missing_syllables = Model.compare_syllables(text, cleaned_recognized_text)
@@ -308,7 +308,7 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
             "missing_feedback": missing_feedback,
             "score": total_score,
             "g2p_feedback": g2p_feedback,
-            "jamo_feedback": jamo_feedback,
+            #"jamo_feedback": jamo_feedback_str,
            
         }
 
