@@ -19,8 +19,20 @@ import httpx  # 비동기 HTTP 요청을 위해 httpx 사용
 import hgtk  # 한글 초성, 중성, 종성 분해용
 from difflib import SequenceMatcher
 from g2pk import G2p
+from fastdtw import fastdtw
+from scipy.spatial.distance import euclidean
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+# CORS 설정 추가
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 모든 도메인 허용 (보안상 특정 도메인만 허용하는 것이 좋음)
+    allow_credentials=True,
+    allow_methods=["*"],  # 모든 HTTP 메서드 허용 (GET, POST, PUT 등)
+    allow_headers=["*"],  # 모든 헤더 허용
+)
 
 # ETRI API 키 (공백 삭제 후 사용)
 API_KEY = "067ea6f9-1715-43ab-814f-e23876886b9b"
@@ -43,7 +55,31 @@ g2p = G2p()
 class Model(BaseModel):
     file_path: str
     text: str  # text를 프론트에서 입력받을 수 있도록 수정
+    @staticmethod
+    def extract_mfcc(audio_path, sr=16000):
+        y, _ = librosa.load(audio_path, sr=sr)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+        # MFCC의 평균 및 표준편차로 벡터화
+        mfcc_mean = np.mean(mfcc, axis=1)
+        mfcc_std = np.std(mfcc, axis=1)
 
+        # MFCC를 벡터화한 결과
+        mfcc_vector = np.concatenate((mfcc_mean, mfcc_std))
+        
+        return mfcc_vector
+    
+    @staticmethod
+    # MFCC 비교 함수
+    def compare_mfcc(reference_mfcc, user_mfcc):
+        similarity = 1 - cosine(reference_mfcc, user_mfcc)
+        return similarity
+ 
+    @staticmethod
+    # DTW(Dynamic Time Warping)
+    def compare_mfcc_with_dtw(reference_mfcc, user_mfcc):
+        dist, _, _, _ = accelerated_dtw(reference_mfcc.T, user_mfcc.T, dist='euclidean')
+        return dist
+    
     @staticmethod
     def get_g2p_pronunciation(text):
         """주어진 텍스트의 표준 발음을 G2P 변환하여 반환"""
@@ -187,7 +223,7 @@ class Model(BaseModel):
         return feedback
 
     @staticmethod
-    def calculate_score(reference_text, user_text):
+    def calculate_score(reference_text, user_text, reference_audio, user_audio):
         """전체 점수를 계산"""
         # 각 방법에 대한 점수 계산
         syllable_accuracy = Model.compare_text_by_syllables(reference_text, user_text)
@@ -195,13 +231,15 @@ class Model(BaseModel):
         jamo_dtw = Model.compare_jamo_dtw(reference_text, user_text)
         missing_syllables = Model.compare_syllables(reference_text, user_text)
         lcs_score = Model.lcs(reference_text, user_text)
-       
+        mfcc_similarity = Model.compare_mfcc(reference_audio, user_audio)  # 기존 MFCC 유사도
+        mfcc_dtw = Model.compare_mfcc_with_dtw(reference_audio, user_audio)  # DTW 기반 MFCC 비교 추가
         # 가중치 설정
         syllable_weight = 0.1
         character_weight = 0.1
-        jamo_weight = 0.45
+        jamo_weight = 0.25
         missing_weight = 0.05
-        lcs_weight = 0.30
+        lcs_weight = 0.25
+        mfcc_weight = 0.25  # MFCC 유사도 가중치 추가
 
         # 점수를 100점 만점으로 정규화하여 계산
         syllable_score = syllable_accuracy  # 음절 정확도는 이미 100점 만점으로 계산됨
@@ -209,12 +247,21 @@ class Model(BaseModel):
         jamo_score = 100 - jamo_dtw  # DTW의 결과는 낮을수록 정확도 높으므로 100에서 빼기
         missing_score = max(0, 100 - (missing_syllables * 10))  # 음절 누락은 누락된 수에 비례하여 점수 차감 (누락이 많을수록 점수 낮아짐)
         lcs_score = (lcs_score / len(reference_text)) * 100  # LCS 길이를 기준으로 비율로 계산
-        # 최종 점수 계산
+
+        # MFCC 점수: 유사도는 높을수록 좋고, DTW 거리는 낮을수록 좋음
+        mfcc_similarity_score = mfcc_similarity * 100  # 유사도는 0~1 범위이므로 100점 만점으로 변환
+        mfcc_dtw_score = max(0, 100 - (mfcc_dtw / 10))  # DTW 거리를 기반으로 정규화
+
+        # 두 점수를 조합 (비율은 필요에 따라 조정 가능)
+        mfcc_score = (mfcc_similarity_score * 0.5) + (mfcc_dtw_score * 0.5)
+
+         # 최종 점수 계산
         total_score = (syllable_score * syllable_weight) + \
                     (character_score * character_weight) + \
                     (jamo_score * jamo_weight) + \
                     (missing_score * missing_weight) + \
-                    (lcs_score * lcs_weight)
+                    (lcs_score * lcs_weight) + \
+                    (mfcc_score * mfcc_weight)
         return total_score
     # API로 텍스트 발음교정
     @staticmethod
@@ -276,21 +323,30 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
     except Exception as e:
         return JSONResponse(status_code=500, content={"message": f"파일 저장 또는 처리 실패: {str(e)}"})
 
+    ref_mfcc = Model.extract_mfcc(REFERENCE_AUDIO_PATH)
+    user_mfcc = Model.extract_mfcc(processed_audio_path)
+    similarity = Model.compare_mfcc(ref_mfcc, user_mfcc)
+    dtw_distance = Model.compare_mfcc_with_dtw(ref_mfcc, user_mfcc)
+
+    print(f"MFCC 벡터 간 유사도: {similarity * 100:.2f}%")
+    print(f"발음 유사도 (DTW 기반 거리): {dtw_distance:.2f}")
     # ETRI API로 음성 텍스트 변환
     recognized_text = await Model.transcribe_with_etri(processed_audio_path)
-
+    print(recognized_text)
+    recognized_text="구지"
     if recognized_text:
-        cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text)
-        text = Model.remove_spaces_and_punctuation(text)
+        cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text) # 내 발음
+        text = Model.remove_spaces_and_punctuation(text)# 발음할 것것
 
         # **G2P 변환 적용**
-        reference_pronunciation = Model.get_g2p_pronunciation(text)
-        user_pronunciation = Model.get_g2p_pronunciation(cleaned_recognized_text)
+        reference_pronunciation = Model.get_g2p_pronunciation(text) # 발음 규칙 적용용
+        user_pronunciation = Model.get_g2p_pronunciation(cleaned_recognized_text) # 발음 규칙 적용한 내발음
 
-        g2p_feedback = Model.compare_pronunciation(reference_pronunciation, user_pronunciation)
+        g2p_feedback = Model.compare_pronunciation(reference_pronunciation, cleaned_recognized_text) # 기존 발음과 ,사용자 발음을 입력해서 비교교
 
-        total_score = Model.calculate_score(g2p(text), g2p(cleaned_recognized_text))
-
+        #발음규칙 적용한 표준발음과,내 발음
+        total_score = Model.calculate_score(reference_pronunciation, cleaned_recognized_text,ref_mfcc,user_mfcc)
+        
         # 피드백 생성
         missing_syllables = Model.compare_syllables(text, cleaned_recognized_text)
         missing_feedback = (
@@ -298,14 +354,15 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
         )
 
         # 모음/자음 오류 피드백
-        jamo_feedback = Model.compare_jamo_feedback(text, cleaned_recognized_text)
+        jamo_feedback = Model.compare_jamo_feedback(g2p(text), cleaned_recognized_text)
         jamo_feedback_str = "\n".join(jamo_feedback) if jamo_feedback else "모음/자음 발음 오류가 없습니다."
 
-        print(jamo_feedback)
+        #print(jamo_feedback)
         feedback_message = {
-            "original_text": text,
-            "recognized_text": cleaned_recognized_text,
-            "missing_feedback": missing_feedback,
+            "발음할 것": text,
+            #"인식된 언어": cleaned_recognized_text,
+            "실제 발음언어" : cleaned_recognized_text,
+            "누락 피드백": missing_feedback,
             "score": total_score,
             "g2p_feedback": g2p_feedback,
             #"jamo_feedback": jamo_feedback_str,
