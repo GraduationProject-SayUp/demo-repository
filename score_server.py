@@ -363,8 +363,8 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
             #"인식된 언어": cleaned_recognized_text,
             "실제 발음언어" : cleaned_recognized_text,
             "누락 피드백": missing_feedback,
-            "score": total_score,
-            "g2p_feedback": g2p_feedback,
+            "점수수": total_score,
+            "발음 피드백": g2p_feedback,
             #"jamo_feedback": jamo_feedback_str,
            
         }
