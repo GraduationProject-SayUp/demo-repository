@@ -1,3 +1,4 @@
+
 import pyttsx3
 import speech_recognition as sr
 import os
@@ -11,143 +12,109 @@ from scipy.spatial.distance import cosine
 from dtw import accelerated_dtw
 from jiwer import wer
 import re
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile, Form, Query
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
 import asyncio
 from pydantic import BaseModel
-import httpx  # 비동기 HTTP 요청을 위해 httpx 사용
-import hgtk  # 한글 초성, 중성, 종성 분해용
+import httpx
+import hgtk
 from difflib import SequenceMatcher
 from g2pk import G2p
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
-from fastapi.middleware.cors import CORSMiddleware
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
+from datetime import datetime
 
 app = FastAPI()
 
-# CORS 설정 추가
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 모든 도메인 허용 (보안상 특정 도메인만 허용하는 것이 좋음)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # 모든 HTTP 메서드 허용 (GET, POST, PUT 등)
-    allow_headers=["*"],  # 모든 헤더 허용
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# ETRI API 키 (공백 삭제 후 사용)
 API_KEY = "067ea6f9-1715-43ab-814f-e23876886b9b"
-
-engine = pyttsx3.init()
-
-# TTS 설정 (예: 한국어)
-engine.setProperty('rate', 150)  # 속도 설정
-engine.setProperty('volume', 1)  # 볼륨 설정
-engine.setProperty('language', 'ko')
-
-# 표준 발음 파일 경로 설정
 REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
 
-# 음성 인식 설정
 recognizer = sr.Recognizer()
 microphone = sr.Microphone()
 g2p = G2p()
 
+score_history = {}
+
 class Model(BaseModel):
-    file_path: str
-    text: str  # text를 프론트에서 입력받을 수 있도록 수정
     @staticmethod
     def extract_mfcc(audio_path, sr=16000):
         y, _ = librosa.load(audio_path, sr=sr)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        # MFCC의 평균 및 표준편차로 벡터화
         mfcc_mean = np.mean(mfcc, axis=1)
         mfcc_std = np.std(mfcc, axis=1)
+        return np.concatenate((mfcc_mean, mfcc_std))
 
-        # MFCC를 벡터화한 결과
-        mfcc_vector = np.concatenate((mfcc_mean, mfcc_std))
-        
-        return mfcc_vector
-    
     @staticmethod
-    # MFCC 비교 함수
     def compare_mfcc(reference_mfcc, user_mfcc):
-        similarity = 1 - cosine(reference_mfcc, user_mfcc)
-        return similarity
- 
+        return 1 - cosine(reference_mfcc, user_mfcc)
+
     @staticmethod
-    # DTW(Dynamic Time Warping)
     def compare_mfcc_with_dtw(reference_mfcc, user_mfcc):
         dist, _, _, _ = accelerated_dtw(reference_mfcc.T, user_mfcc.T, dist='euclidean')
         return dist
-    
+
     @staticmethod
     def get_g2p_pronunciation(text):
-        """주어진 텍스트의 표준 발음을 G2P 변환하여 반환"""
-        return g2p(text)  # "안녕하세요" → "안녕하세오" (연음, 두음법칙 적용 가능)
+        return g2p(text)
 
     @staticmethod
     def compare_pronunciation(reference_pronunciation, user_pronunciation):
-        """G2P 변환된 발음과 사용자의 발음을 비교"""
         ref_jamo = Model.split_to_jamo(reference_pronunciation)
         user_jamo = Model.split_to_jamo(user_pronunciation)
-
         feedback = []
         for i, (ref, user) in enumerate(zip(ref_jamo, user_jamo)):
             if ref != user:
                 feedback.append(f"{i+1}번째 발음 차이: 표준 '{ref}' vs 사용 '{user}'")
-
         return feedback
+
     @staticmethod
     def remove_spaces_and_punctuation(text):
-        """텍스트에서 공백과 마침표, 쉼표 등 특수문자 제거"""
-        cleaned_text = re.sub(r'[^\w\s]', '', text)  # 알파벳, 숫자, 공백 외의 문자 제거
-        cleaned_text = cleaned_text.replace(" ", "")  # 공백 제거
-        return cleaned_text
-    
+        return re.sub(r'[^\w\s]', '', text).replace(" ", "")
+
     @staticmethod
     def split_text_to_characters(text):
-        """텍스트를 한 글자 단위로 분할"""
         return list(text)
-    
+
     @staticmethod
     def compare_text_by_characters(reference_text, user_text):
-        """한 글자 단위로 비교"""
         reference_chars = Model.split_text_to_characters(reference_text)
         user_chars = Model.split_text_to_characters(user_text)
-        
-        # 글자 단위 비교
         match_count = sum(1 for r, u in zip(reference_chars, user_chars) if r == u)
         total_chars = max(len(reference_chars), len(user_chars))
-        accuracy = match_count / total_chars * 100
-        return accuracy
-    
+        return match_count / total_chars * 100
+
     @staticmethod
     def compare_text_by_syllables(reference_text, user_text):
-        """음절 단위 비교"""
         matcher = SequenceMatcher(None, reference_text, user_text)
-        ratio = matcher.ratio() * 100  # 유사도 비율
-        return ratio
-    
+        return matcher.ratio() * 100
+
     @staticmethod
     def split_to_jamo(text):
-        """한글 텍스트를 초성, 중성, 종성으로 분해"""
         jamo_list = []
         for char in text:
-            if hgtk.checker.is_hangul(char):  # 한글인지 확인
+            if hgtk.checker.is_hangul(char):
                 jamo_list.extend(hgtk.letter.decompose(char))
             else:
-                jamo_list.append(char)  # 한글이 아니면 그대로 추가
+                jamo_list.append(char)
         return jamo_list
-    
+
     @staticmethod
     def jamo_distance(jamo1, jamo2):
-        """자음/모음 간의 거리: 같은 경우 0, 비슷한 경우 0.5, 다른 경우 1"""
-        similar_vowels = [
-            ("ㅓ", "ㅔ"), ("ㅐ", "ㅔ"), ("ㅗ", "ㅜ"), ("ㅑ", "ㅕ"), ("ㅛ", "ㅠ")
-        ]
-        similar_consonants = [
-            ("ㄱ", "ㅋ"), ("ㄷ", "ㅌ"), ("ㅂ", "ㅍ"), ("ㅅ", "ㅆ"), ("ㅈ", "ㅊ")
-        ]
+        similar_vowels = [("ㅓ", "ㅔ"), ("ㅐ", "ㅔ"), ("ㅗ", "ㅜ"), ("ㅑ", "ㅕ"), ("ㅛ", "ㅠ")]
+        similar_consonants = [("ㄱ", "ㅋ"), ("ㄷ", "ㅌ"), ("ㅂ", "ㅍ"), ("ㅅ", "ㅆ"), ("ㅈ", "ㅊ")]
         if jamo1 == jamo2:
             return 0
         if (jamo1, jamo2) in similar_vowels or (jamo2, jamo1) in similar_vowels:
@@ -155,233 +122,285 @@ class Model(BaseModel):
         if (jamo1, jamo2) in similar_consonants or (jamo2, jamo1) in similar_consonants:
             return 0.5
         return 1
-    
+
     @staticmethod
     def compare_jamo_dtw(reference_text, user_text):
-        """DTW를 사용해 자음/모음 비교"""
         ref_jamo = Model.split_to_jamo(reference_text)
         user_jamo = Model.split_to_jamo(user_text)
-
         ref_jamo_np = np.array(ref_jamo).reshape(-1, 1)
         user_jamo_np = np.array(user_jamo).reshape(-1, 1)
-
         dist, _, _, _ = accelerated_dtw(ref_jamo_np, user_jamo_np, dist=lambda x, y: Model.jamo_distance(x[0], y[0]))
         return dist
-    
+
     @staticmethod
     def compare_syllables(reference_text, user_text):
-        """음절 단위로 비교하여 누락된 부분 확인"""
         ref_syllables = list(reference_text)
         user_syllables = list(user_text)
-
-
-        # 길이가 같으면 누락 없음 처리
         if len(ref_syllables) == len(user_syllables):
             return 0
-        
-        # LCS로 최대 공통 부분 수열 계산
         lcs_length = Model.lcs(ref_syllables, user_syllables)
-        
-        # 누락된 음절 수 = 원래 음절 수 - LCS 길이
-        missing_syllables = len(ref_syllables) - lcs_length
-        
-        return missing_syllables
+        return len(ref_syllables) - lcs_length
+
     @staticmethod
     def lcs(X, Y):
-        """LCS (최대 공통 부분 수열)을 구하는 함수"""
-        m = len(X)
-        n = len(Y)
+        m, n = len(X), len(Y)
         dp = [[0] * (n + 1) for _ in range(m + 1)]
-
         for i in range(1, m + 1):
             for j in range(1, n + 1):
                 if X[i - 1] == Y[j - 1]:
                     dp[i][j] = dp[i - 1][j - 1] + 1
                 else:
                     dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
-        
         return dp[m][n]
-    @staticmethod
-    def compare_jamo_feedback(reference_text, user_text):
-        """초성, 중성, 종성을 비교하여 잘못 발음된 음절 피드백 제공"""
-        ref_jamo = Model.split_to_jamo(reference_text)
-        user_jamo = Model.split_to_jamo(user_text)
-        
-        feedback = []
-        for i, (ref, user) in enumerate(zip(ref_jamo, user_jamo)):
-            if ref != user:
-                # 유사 발음 체크
-                similar_vowels = [("ㅓ", "ㅔ"), ("ㅐ", "ㅔ"), ("ㅗ", "ㅜ"), ("ㅑ", "ㅕ"), ("ㅛ", "ㅠ")]
-                similar_consonants = [("ㄱ", "ㅋ"), ("ㄷ", "ㅌ"), ("ㅂ", "ㅍ"), ("ㅅ", "ㅆ"), ("ㅈ", "ㅊ")]
-
-                if (ref, user) in similar_vowels or (user, ref) in similar_vowels:
-                    feedback.append(f"{i+1}번째 음절: '{ref}' 발음을 '{user}'로 잘못 발음 (유사 모음)")
-                elif (ref, user) in similar_consonants or (user, ref) in similar_consonants:
-                    feedback.append(f"{i+1}번째 음절: '{ref}' 발음을 '{user}'로 잘못 발음 (유사 자음)")
-                else:
-                    feedback.append(f"{i+1}번째 음절: '{ref}' 발음을 '{user}'로 잘못 발음")
-        return feedback
 
     @staticmethod
     def calculate_score(reference_text, user_text, reference_audio, user_audio):
-        """전체 점수를 계산"""
-        # 각 방법에 대한 점수 계산
         syllable_accuracy = Model.compare_text_by_syllables(reference_text, user_text)
         character_accuracy = Model.compare_text_by_characters(reference_text, user_text)
         jamo_dtw = Model.compare_jamo_dtw(reference_text, user_text)
         missing_syllables = Model.compare_syllables(reference_text, user_text)
         lcs_score = Model.lcs(reference_text, user_text)
-        mfcc_similarity = Model.compare_mfcc(reference_audio, user_audio)  # 기존 MFCC 유사도
-        mfcc_dtw = Model.compare_mfcc_with_dtw(reference_audio, user_audio)  # DTW 기반 MFCC 비교 추가
-        # 가중치 설정
-        syllable_weight = 0.1
-        character_weight = 0.1
-        jamo_weight = 0.25
-        missing_weight = 0.05
-        lcs_weight = 0.25
-        mfcc_weight = 0.25  # MFCC 유사도 가중치 추가
+        mfcc_similarity = Model.compare_mfcc(reference_audio, user_audio)
+        mfcc_dtw = Model.compare_mfcc_with_dtw(reference_audio, user_audio)
 
-        # 점수를 100점 만점으로 정규화하여 계산
-        syllable_score = syllable_accuracy  # 음절 정확도는 이미 100점 만점으로 계산됨
-        character_score = character_accuracy  # 문자 정확도도 마찬가지
-        jamo_score = 100 - jamo_dtw  # DTW의 결과는 낮을수록 정확도 높으므로 100에서 빼기
-        missing_score = max(0, 100 - (missing_syllables * 10))  # 음절 누락은 누락된 수에 비례하여 점수 차감 (누락이 많을수록 점수 낮아짐)
-        lcs_score = (lcs_score / len(reference_text)) * 100  # LCS 길이를 기준으로 비율로 계산
-
-        # MFCC 점수: 유사도는 높을수록 좋고, DTW 거리는 낮을수록 좋음
-        mfcc_similarity_score = mfcc_similarity * 100  # 유사도는 0~1 범위이므로 100점 만점으로 변환
-        mfcc_dtw_score = max(0, 100 - (mfcc_dtw / 10))  # DTW 거리를 기반으로 정규화
-
-        # 두 점수를 조합 (비율은 필요에 따라 조정 가능)
+        syllable_score = syllable_accuracy
+        character_score = character_accuracy
+        jamo_score = 100 - jamo_dtw
+        missing_score = max(0, 100 - (missing_syllables * 10))
+        lcs_score = (lcs_score / len(reference_text)) * 100
+        mfcc_similarity_score = mfcc_similarity * 100
+        mfcc_dtw_score = max(0, 100 - (mfcc_dtw / 10))
         mfcc_score = (mfcc_similarity_score * 0.5) + (mfcc_dtw_score * 0.5)
 
-         # 최종 점수 계산
-        total_score = (syllable_score * syllable_weight) + \
-                    (character_score * character_weight) + \
-                    (jamo_score * jamo_weight) + \
-                    (missing_score * missing_weight) + \
-                    (lcs_score * lcs_weight) + \
-                    (mfcc_score * mfcc_weight)
-        return total_score
-    # API로 텍스트 발음교정
-    @staticmethod
-    async def transcribe_with_etri(file_path, script=""):
-        # ETRI API URL (한국어 발음 평가 API)
-        url = "http://aiopen.etri.re.kr:8000/WiseASR/PronunciationKor"
-        
-        # 헤더 설정 (Authorization에 accessKey 포함)
-        headers = {
-            "Content-Type": "application/json; charset=UTF-8",
-            "Authorization": API_KEY
-        }
-        
-        # 오디오 파일을 Base64로 인코딩
-        with open(file_path, "rb") as file:
-            audio_contents = base64.b64encode(file.read()).decode("utf-8")
-        
-        data = {
-            "argument": {
-                "language_code": "korean",
-                "audio": audio_contents,
-            }
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=data)
+        total_score = (syllable_score * 0.1 +
+                       character_score * 0.1 +
+                       jamo_score * 0.25 +
+                       missing_score * 0.05 +
+                       lcs_score * 0.25 +
+                       mfcc_score * 0.25)
 
-        if response.status_code == 200:
-            try:
-                result = response.json()
-                print(f"ETRI API Response: {result}")
-                if result.get('result') == 0:
-                    return result['return_object']['recognized']
-                else:
-                    print(f"ETRI API Error: {result.get('reason', 'Unknown error')}")
-                    return None
-            except json.JSONDecodeError as e:
-                print(f"JSON 디코딩 실패: {e}")
-                print(f"응답 본문: {response.text}")
-                return None
-        else:
-            print(f"HTTP 요청 실패: 상태 코드 {response.status_code}")
-            print(f"응답 본문: {response.text}")
-            return None
+        return {
+            "total": total_score,
+            "syllable_score": syllable_score,
+            "character_score": character_score,
+            "jamo_score": jamo_score,
+            "missing_score": missing_score,
+            "lcs_score": lcs_score,
+            "mfcc_score": mfcc_score,
+        }
 
 @app.post("/evaluate-pronunciation")
-async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(...)):
+async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(...), user_id: str = Form(...)):
     try:
-        # 업로드된 파일 저장
         file_path = os.path.join(os.getcwd(), f"temp_{file.filename}")
         with open(file_path, "wb") as f:
             f.write(await file.read())
         processed_audio_path = os.path.join(os.getcwd(), "user_audio_processed.wav")
-
-        # 오디오 파일 처리 (샘플링 레이트 16000Hz로 설정)
         audio = AudioSegment.from_file(file_path)
         audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio.export(processed_audio_path, format="wav")
     except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"파일 저장 또는 처리 실패: {str(e)}"})
+        return JSONResponse(status_code=500, content={"message": f"파일 처리 실패: {str(e)}"})
 
     ref_mfcc = Model.extract_mfcc(REFERENCE_AUDIO_PATH)
     user_mfcc = Model.extract_mfcc(processed_audio_path)
-    similarity = Model.compare_mfcc(ref_mfcc, user_mfcc)
-    dtw_distance = Model.compare_mfcc_with_dtw(ref_mfcc, user_mfcc)
 
-    print(f"MFCC 벡터 간 유사도: {similarity * 100:.2f}%")
-    print(f"발음 유사도 (DTW 기반 거리): {dtw_distance:.2f}")
-    # ETRI API로 음성 텍스트 변환
-    recognized_text = await Model.transcribe_with_etri(processed_audio_path)
-    print(recognized_text)
-    recognized_text="구지"
-    if recognized_text:
-        cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text) # 내 발음
-        text = Model.remove_spaces_and_punctuation(text)# 발음할 것것
+    recognized_text = "구지"
+    cleaned_recognized_text = Model.remove_spaces_and_punctuation(recognized_text)
+    text = Model.remove_spaces_and_punctuation(text)
 
-        # **G2P 변환 적용**
-        reference_pronunciation = Model.get_g2p_pronunciation(text) # 발음 규칙 적용용
-        user_pronunciation = Model.get_g2p_pronunciation(cleaned_recognized_text) # 발음 규칙 적용한 내발음
+    reference_pronunciation = Model.get_g2p_pronunciation(text)
+    g2p_feedback = Model.compare_pronunciation(reference_pronunciation, cleaned_recognized_text)
+    score_result = Model.calculate_score(reference_pronunciation, cleaned_recognized_text, ref_mfcc, user_mfcc)
 
-        g2p_feedback = Model.compare_pronunciation(reference_pronunciation, cleaned_recognized_text) # 기존 발음과 ,사용자 발음을 입력해서 비교교
+    if user_id not in score_history:
+        score_history[user_id] = []
+    score_history[user_id].append({
+        "word": text,
+        "score": score_result["total"],
+        "date": datetime.now().isoformat(),
+        "breakdown": score_result
+    })
 
-        #발음규칙 적용한 표준발음과,내 발음
-        total_score = Model.calculate_score(reference_pronunciation, cleaned_recognized_text,ref_mfcc,user_mfcc)
-        
-        # 피드백 생성
-        missing_syllables = Model.compare_syllables(text, cleaned_recognized_text)
-        missing_feedback = (
-            f"누락된 음절: {missing_syllables}개" if missing_syllables > 0 else "음절 누락이 없습니다."
-        )
-
-        # 모음/자음 오류 피드백
-        jamo_feedback = Model.compare_jamo_feedback(g2p(text), cleaned_recognized_text)
-        jamo_feedback_str = "\n".join(jamo_feedback) if jamo_feedback else "모음/자음 발음 오류가 없습니다."
-
-        #print(jamo_feedback)
-        feedback_message = {
-            "발음할 것": text,
-            #"인식된 언어": cleaned_recognized_text,
-            "실제 발음언어" : cleaned_recognized_text,
-            "누락 피드백": missing_feedback,
-            "점수수": total_score,
-            "발음 피드백": g2p_feedback,
-            #"jamo_feedback": jamo_feedback_str,
-           
+    response_content = {
+        "message": "발음 평가 결과입니다.",
+        "score": score_result["total"],
+        "breakdown": score_result,
+        "feedback": {
+            "발음 피드백": g2p_feedback
         }
+    }
+    return JSONResponse(content=response_content)
 
-        # 점수와 피드백 반환
-        response_content = {
-            "message": "발음 평가 결과입니다.",
-            "score": total_score,
-            "feedback": feedback_message
-        }
+@app.get("/score-history")
+async def get_score_history(user_id: str = Query(...), word: Optional[str] = None):
+    user_data = score_history.get(user_id, [])
+    if word:
+        user_data = [entry for entry in user_data if entry["word"] == word]
+    return {"history": user_data}
 
-        return JSONResponse(content=response_content)
-    else:
-        os.remove(file_path)
-        os.remove(processed_audio_path)
-        return JSONResponse(content={"message": "발음 교정을 위한 텍스트 변환에 실패했습니다."})    
+@app.get("/score-plot")
+async def plot_score_history(user_id: str, word: Optional[str] = None):
+    user_data = score_history.get(user_id, [])
+    if word:
+        user_data = [entry for entry in user_data if entry["word"] == word]
+    if not user_data:
+        return JSONResponse(content={"message": "해당 데이터가 없습니다."}, status_code=404)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    df = pd.DataFrame(user_data)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(df["date"], df["score"], marker='o')
+    plt.title(f"'{word}' 발음 점수 추이")
+    plt.xlabel("날짜")
+    plt.ylabel("점수")
+    plt.xticks(rotation=45)
+    plt.grid(True)
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+@app.get("/score-comparison")
+async def compare_score(user_id: str, word: str):
+    user_scores = []
+    all_scores = []
+
+    for uid, records in score_history.items():
+        for record in records:
+            if record["word"] == word:
+                all_scores.append(record["score"])
+                if uid == user_id:
+                    user_scores.append(record["score"])
+
+    if not all_scores:
+        return JSONResponse(content={"message": "데이터가 없습니다."}, status_code=404)
+
+    average_score = sum(all_scores) / len(all_scores)
+    return {
+        "word": word,
+        "average_score": average_score,
+        "your_scores": user_scores,
+        "difference": user_scores[-1] - average_score if user_scores else None
+    }
+
+
+
+@app.get("/compare-plot")
+async def compare_plot(user_id: str, word: str):
+    user_scores = []
+    all_scores = []
+
+    for uid, records in score_history.items():
+        for record in records:
+            if record["word"] == word:
+                all_scores.append(record["score"])
+                if uid == user_id:
+                    user_scores.append(record["score"])
+
+    if not all_scores or not user_scores:
+        return JSONResponse(content={"message": "해당 단어에 대한 데이터가 없습니다."}, status_code=404)
+
+    average_score = sum(all_scores) / len(all_scores)
+    your_latest_score = user_scores[-1]
+
+    # 그래프 생성
+    labels = ['전체 평균', '내 점수']
+    scores = [average_score, your_latest_score]
+
+    plt.figure(figsize=(6, 4))
+    bars = plt.bar(labels, scores)
+    plt.title(f"'{word}' 단어 평균 점수 비교")
+    plt.ylabel("점수 (100점 만점)")
+    plt.ylim(0, 100)
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2.0, height + 1, f"{height:.1f}", ha='center')
+    plt.tight_layout()
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/png")
+
+
+
+from fpdf import FPDF
+from fastapi.responses import FileResponse
+import os
+from datetime import datetime
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
+
+@app.get("/generate-report")
+async def generate_report(user_id: str, start_date: str, end_date: str, word: str):
+    user_data = score_history.get(user_id, [])
+
+    # 날짜 필터링
+    start_dt = datetime.fromisoformat(start_date)
+    end_dt = datetime.fromisoformat(end_date)
+    filtered = [
+        entry for entry in user_data
+        if entry["word"] == word and start_dt <= datetime.fromisoformat(entry["date"]) <= end_dt
+    ]
+    if not filtered:
+        return JSONResponse(content={"message": "해당 기간에 데이터가 없습니다."}, status_code=404)
+
+    df = pd.DataFrame(filtered)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+
+    # 점수 요약
+    avg_score = df["score"].mean()
+    max_score = df["score"].max()
+    min_score = df["score"].min()
+
+    # 그래프 생성
+    plt.figure(figsize=(6, 3))
+    plt.plot(df["date"], df["score"], marker='o')
+    plt.title(f"'{word}' 발음 점수 추이")
+    plt.xlabel("날짜")
+    plt.ylabel("점수")
+    plt.ylim(0, 100)
+    plt.grid(True)
+    plt.tight_layout()
+    graph_buf = BytesIO()
+    plt.savefig(graph_buf, format='png')
+    graph_buf.seek(0)
+    graph_path = f"/tmp/{user_id}_{word}_plot.png"
+    with open(graph_path, "wb") as f:
+        f.write(graph_buf.read())
+
+    # PDF 생성
+    class ReportPDF(FPDF):
+        def header(self):
+            self.add_font('NanumCoding', '', 'NanumGothicCoding.ttf', uni=True)
+            self.set_font('NanumCoding', '', 16)
+            self.cell(0, 10, "발음 학습 리포트", ln=True, align='C')
+
+        def add_content(self):
+            self.set_font('NanumCoding', '', 12)
+            self.cell(0, 10, f"사용자: {user_id}", ln=True)
+            self.cell(0, 10, f"기간: {start_date} ~ {end_date}", ln=True)
+            self.cell(0, 10, f"단어: {word}", ln=True)
+            self.cell(0, 10, f"평균 점수: {avg_score:.1f}", ln=True)
+            self.cell(0, 10, f"최고 점수: {max_score:.1f}", ln=True)
+            self.cell(0, 10, f"최저 점수: {min_score:.1f}", ln=True)
+
+        def insert_graph(self, image_path):
+            self.image(image_path, w=180)
+
+    pdf = ReportPDF()
+    pdf.add_page()
+    pdf.add_content()
+    pdf.insert_graph(graph_path)
+
+    output_path = f"/mnt/data/{user_id}_{word}_report.pdf"
+    pdf.output(output_path)
+
+    return FileResponse(output_path, media_type="application/pdf", filename=os.path.basename(output_path))
