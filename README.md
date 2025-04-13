@@ -25,7 +25,7 @@ pip install -r requirements.txt
 ### 2. 서버 실행
 
 ```bash
-uvicorn score_server:app --reload
+uvicorn main:app --reload
 ```
 
 서버가 실행되면 [http://localhost:8000/docs](http://localhost:8000/docs)에서 Swagger UI로 API 테스트 가능
