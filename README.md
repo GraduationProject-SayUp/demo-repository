@@ -38,12 +38,15 @@ uvicorn main:app --reload
 .
 ├── main.py
 ├── routes/
-│   └── evaluate.py
+│   ├── evaluate.py
+│   ├── history.py
+│   └── report.py
 ├── services/
 │   └── pronunciation_service.py
 ├── models/
 │   └── pronunciation_model.py
 ├── static/
+│   └── NanumGothicCoding.ttf
 ├── data/
 │   └── standard_pronunciation.wav
 ├── requirements.txt
