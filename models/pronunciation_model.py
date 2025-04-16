@@ -5,7 +5,8 @@ import librosa
 import hgtk
 from difflib import SequenceMatcher
 from g2pk import G2p
-from dtw import accelerated_dtw
+from fastdtw import fastdtw
+from scipy.spatial.distance import euclidean
 from scipy.spatial.distance import cosine
 import base64
 import httpx
