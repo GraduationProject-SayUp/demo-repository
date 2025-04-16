@@ -120,7 +120,11 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 venv
 __pycache__
 *.pyc
-*.wav
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+.env
 .DS_Store
 ```
 
