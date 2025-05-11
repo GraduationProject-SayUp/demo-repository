@@ -6,6 +6,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from io import BytesIO
 from routes.evaluate import SCORE_HISTORY
+import matplotlib.font_manager as fm
+import matplotlib as mpl
+
+# ✅ Windows 기본 한글 글꼴 사용 (맑은 고딕)
+font_path = "C:/Windows/Fonts/malgun.ttf"  # 경로는 OS에 따라 다를 수 있음
+fontprop = fm.FontProperties(fname=font_path)
+plt.rcParams['font.family'] = fontprop.get_name()
+mpl.rcParams['axes.unicode_minus'] = False  # 마이너스 깨짐 방지
 
 router = APIRouter()
 
@@ -29,9 +37,9 @@ async def plot_score_history(user_id: str, word: str):
 
     plt.figure(figsize=(6, 3))
     plt.plot(df["date"], df["score"], marker='o')
-    plt.title(f"{word} 점수 추이")
-    plt.xlabel("날짜")
-    plt.ylabel("점수")
+    plt.title(f"{word} 점수 추이", fontproperties=fontprop)
+    plt.xlabel("날짜", fontproperties=fontprop)
+    plt.ylabel("점수", fontproperties=fontprop)
     plt.ylim(0, 100)
     plt.tight_layout()
 

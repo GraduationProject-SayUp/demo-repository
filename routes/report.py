@@ -9,6 +9,16 @@ import pandas as pd
 import os
 from fpdf import FPDF
 from routes.evaluate import SCORE_HISTORY
+import matplotlib.font_manager as fm
+import matplotlib as mpl
+
+# ✅ 맑은 고딕 설정 (Windows 기본 한글 폰트)
+font_path = "C:/Windows/Fonts/malgun.ttf"
+font_prop = fm.FontProperties(fname=font_path)
+print("폰트 이름:", font_prop.get_name())
+
+plt.rcParams['font.family'] = font_prop.get_name()
+mpl.rcParams['axes.unicode_minus'] = False
 
 router = APIRouter()
 
@@ -34,9 +44,9 @@ async def compare_plot(user_id: str, word: str):
     bars = plt.bar(["전체 평균", "내 점수"], [average, latest])
     for bar in bars:
         height = bar.get_height()
-        plt.text(bar.get_x() + bar.get_width()/2.0, height + 1, f"{height:.1f}", ha='center')
+        plt.text(bar.get_x() + bar.get_width()/2.0, height + 1, f"{height:.1f}", ha='center', fontproperties=font_prop)
     plt.ylim(0, 100)
-    plt.title(f"{word} 단어 평균 비교")
+    plt.title(f"{word} 단어 평균 비교", fontproperties=font_prop)
     plt.tight_layout()
 
     buf = BytesIO()
@@ -69,9 +79,9 @@ async def generate_report(user_id: str, word: str, start_date: str, end_date: st
     # 그래프 저장
     plt.figure(figsize=(6, 3))
     plt.plot(df["date"], df["score"], marker='o')
-    plt.title(f"{word} 발음 점수 추이")
-    plt.xlabel("날짜")
-    plt.ylabel("점수")
+    plt.title(f"{word} 발음 점수 추이", fontproperties=font_prop)
+    plt.xlabel("날짜", fontproperties=font_prop)
+    plt.ylabel("점수", fontproperties=font_prop)
     plt.ylim(0, 100)
     plt.tight_layout()
     graph_path = f"{user_id}_{word}_temp_plot.png"
@@ -80,12 +90,12 @@ async def generate_report(user_id: str, word: str, start_date: str, end_date: st
     # PDF 생성
     class ReportPDF(FPDF):
         def header(self):
-            self.add_font("Nanum", "", "static/NanumGothicCoding-Regular.ttf", uni=True)
-            self.set_font("Nanum", "", 16)
+            self.add_font("Malgun", "", "C:/Windows/Fonts/malgun.ttf", uni=True)  # ✅ 맑은 고딕 등록
+            self.set_font("Malgun", "", 16)
             self.cell(0, 10, "발음 학습 리포트", ln=True, align='C')
 
         def content(self):
-            self.set_font("Nanum", "", 12)
+            self.set_font("Malgun", "", 12)
             self.cell(0, 10, f"사용자: {user_id}", ln=True)
             self.cell(0, 10, f"기간: {start_date} ~ {end_date}", ln=True)
             self.cell(0, 10, f"단어: {word}", ln=True)

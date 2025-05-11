@@ -5,7 +5,7 @@ import librosa
 import hgtk
 from difflib import SequenceMatcher
 from g2pk import G2p
-from fastdtw import fastdtw
+from dtw import accelerated_dtw
 from scipy.spatial.distance import euclidean
 from scipy.spatial.distance import cosine
 import base64
@@ -174,8 +174,19 @@ class PronunciationModel:
             }
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(url, headers=headers, json=data)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(url, headers=headers, json=data)
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('result') == 0:
+                        return result['return_object']['recognized']
+            except httpx.ReadTimeout:
+                print("❌ [ETRI] 요청 시간이 초과되었습니다.")
+            except Exception as e:
+                print(f"❌ [ETRI] 오류 발생: {e}")
+
+            return None
 
         if response.status_code == 200:
             result = response.json()
