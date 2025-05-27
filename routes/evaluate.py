@@ -1,5 +1,5 @@
 # routes/evaluate.py
-
+import pyttsx3
 from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import os
@@ -24,6 +24,19 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
         with open(file_path, "wb") as f:
             f.write(await file.read())
 
+        engine = pyttsx3.init()
+
+        # TTS 설정 (예: 한국어)
+        engine.setProperty('rate', 150)  # 속도 설정
+        engine.setProperty('volume', 1)  # 볼륨 설정
+        engine.setProperty('language', 'ko')
+
+        # 표준 발음 파일 경로 설정
+        REFERENCE_AUDIO_PATH = os.path.join(os.getcwd(), 'standard_pronunciation.wav')
+
+        # TTS로 음성 파일 저장
+        engine.save_to_file(text, REFERENCE_AUDIO_PATH)
+        engine.runAndWait()  # 음성 파일 저장 후 대기
 
         processed_audio = "user_audio_processed.wav"
         audio = AudioSegment.from_file(file_path)
@@ -40,6 +53,9 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
 
         reference_pronunciation = model.get_g2p(text)
         g2p_feedback = model.compare_pronunciation(reference_pronunciation, cleaned_recognized_text)
+        dtw_feedback = model.get_mfcc_dtw_feedback(ref_mfcc, user_mfcc)
+        mfcc_feedback = model.analyze_mfcc_bands(ref_mfcc,user_mfcc)
+        dtw_align_feedback = model.analyze_dtw_alignment(ref_mfcc,user_mfcc)
         score_result = model.calculate_score(reference_pronunciation, cleaned_recognized_text, ref_mfcc, user_mfcc)
         if user_id not in SCORE_HISTORY:
             SCORE_HISTORY[user_id] = []
@@ -56,7 +72,12 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
             "발음 할 것": text,
             "인식된 발음음": cleaned_recognized_text,
             "breakdown": score_result,
-            "feedback": g2p_feedback
+            "feedback": {
+                "g2p": g2p_feedback,
+                "mfcc": mfcc_feedback,
+                "dtw_align" : dtw_align_feedback,
+                "dtw_feedback" : dtw_feedback
+            }
         })
     except Exception as e:
         import traceback

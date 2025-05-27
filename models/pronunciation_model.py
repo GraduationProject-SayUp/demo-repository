@@ -5,7 +5,7 @@ import librosa
 import hgtk
 from difflib import SequenceMatcher
 from g2pk import G2p
-from dtw import accelerated_dtw
+from dtw import dtw
 from scipy.spatial.distance import euclidean
 from scipy.spatial.distance import cosine
 import base64
@@ -29,11 +29,7 @@ class PronunciationModel:
     def compare_mfcc(reference_mfcc, user_mfcc):
         return 1 - cosine(reference_mfcc, user_mfcc)
 
-    @staticmethod
-    def compare_mfcc_with_dtw(reference_mfcc, user_mfcc):
-        dist, _, _, _ = accelerated_dtw(reference_mfcc.T, user_mfcc.T, dist='euclidean')
-        return dist
-
+    
     def get_g2p(self, text):
         return self.g2p(text)
 
@@ -46,9 +42,19 @@ class PronunciationModel:
         ref_jamo = PronunciationModel.split_to_jamo(reference_pronunciation)
         user_jamo = PronunciationModel.split_to_jamo(user_pronunciation)
         feedback = []
+
         for i, (ref, user) in enumerate(zip(ref_jamo, user_jamo)):
             if ref != user:
-                feedback.append(f"{i+1}번째 발음 차이: 표준 '{ref}' vs 사용 '{user}'")
+                try:
+                    # ref와 user가 자모 세 개로 분해될 수 있을 때만
+                    ref_c, ref_v, ref_f = ref if len(ref) == 3 else (ref, '', '')
+                    user_c, user_v, user_f = user if len(user) == 3 else (user, '', '')
+                    feedback.append(f"{i+1}번째 초성 차이: '{ref_c}' vs '{user_c}'")
+                    feedback.append(f"{i+1}번째 중성 차이: '{ref_v}' vs '{user_v}'")
+                    feedback.append(f"{i+1}번째 종성 차이: '{ref_f}' vs '{user_f}'")
+                except Exception:
+                    # fallback for unexpected input
+                    feedback.append(f"{i+1}번째 발음 차이: '{ref}' vs '{user}'")
         return feedback
 
     @staticmethod
@@ -96,7 +102,7 @@ class PronunciationModel:
         user_jamo = PronunciationModel.split_to_jamo(user_text)
         ref_jamo_np = np.array(ref_jamo).reshape(-1, 1)
         user_jamo_np = np.array(user_jamo).reshape(-1, 1)
-        dist, _, _, _ = accelerated_dtw(ref_jamo_np, user_jamo_np, dist=lambda x, y: PronunciationModel.jamo_distance(x[0], y[0]))
+        dist, _, _, _ = dtw(ref_jamo_np, user_jamo_np, dist=lambda x, y: PronunciationModel.jamo_distance(x[0], y[0]))
         return dist
 
     @staticmethod
@@ -120,6 +126,7 @@ class PronunciationModel:
                     dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
         return dp[m][n]
 
+    
     @staticmethod
     def calculate_score(reference_text, user_text, reference_audio, user_audio):
         syllable_accuracy = PronunciationModel.compare_text_by_syllables(reference_text, user_text)
@@ -155,6 +162,117 @@ class PronunciationModel:
             "lcs_score": lcs_score,
             "mfcc_score": mfcc_score,
         }
+    @staticmethod
+    def compare_mfcc_with_dtw(reference_mfcc, user_mfcc):
+        from dtw import dtw
+
+        ref_seq = reference_mfcc.T
+        user_seq = user_mfcc.T
+
+        dist, _, _, _ = dtw(
+            ref_seq, user_seq,
+            dist=lambda x, y: euclidean(x.ravel(), y.ravel())  # 🔥 flatten to 1D
+        )
+        return dist
+    @staticmethod
+    def get_mfcc_dtw_feedback(ref_mfcc, user_mfcc):
+        from dtw import dtw
+
+        # 길이 맞추기 (필요시 padding 또는 trimming 고려 가능)
+        ref_seq = ref_mfcc.T
+        user_seq = user_mfcc.T
+       
+        dist, _, _, _ = dtw(
+            ref_seq, user_seq,
+            dist=lambda x, y: euclidean(x.ravel(), y.ravel())  # 🔥 flatten to 1D
+        )
+
+        # 단순 규칙 예시: 속도나 왜곡이 심한 구간 체크
+        if dist > 1000:
+            return ["발음 속도가 기준보다 빠르거나 느립니다. 일정하게 발음해보세요."]
+        elif dist > 500:
+            return ["일부 구간이 길거나 짧습니다. 일정한 속도로 발음해보세요."]
+        else:
+            return ["발음 속도와 길이는 비교적 안정적입니다."]
+
+    
+    @staticmethod
+    def analyze_dtw_alignment(reference_mfcc, user_mfcc):
+        """DTW warping path로 발음 길이 차이 피드백"""
+        from dtw import dtw
+        from scipy.spatial.distance import euclidean
+
+        ref_seq = reference_mfcc.T
+        user_seq = user_mfcc.T
+
+        dist, cost, acc_cost, path = dtw(
+            ref_seq,
+            user_seq,
+            dist=lambda x, y: euclidean(x.ravel(), y.ravel())
+        )
+
+        ref_indices, user_indices = path
+        feedback = []
+
+        stretch_count = 0
+        compress_count = 0
+
+        for i in range(1, len(ref_indices)):
+            ref_prev, user_prev = ref_indices[i - 1], user_indices[i - 1]
+            ref_curr, user_curr = ref_indices[i], user_indices[i]
+
+            ref_delta = ref_curr - ref_prev
+            user_delta = user_curr - user_prev
+
+            if user_delta > ref_delta:
+                stretch_count += 1
+            elif user_delta < ref_delta:
+                compress_count += 1
+
+        if stretch_count > 5:
+            feedback.append("발음을 기준보다 길게 끄는 경향이 있습니다. 조금 더 간결하게 발음해보세요.")
+        if compress_count > 5:
+            feedback.append("발음이 기준보다 짧습니다. 천천히 또박또박 발음해보세요.")
+        if not feedback:
+            feedback.append("발음 속도와 길이는 비교적 안정적입니다.")
+
+        return feedback
+
+    @staticmethod
+    def analyze_mfcc_bands(ref_mfcc, user_mfcc):
+        """MFCC 평균 차이를 기반으로 특정 대역의 부정확성 피드백"""
+        ref_mfcc = np.array(ref_mfcc)
+        user_mfcc = np.array(user_mfcc)
+
+        if ref_mfcc.shape != user_mfcc.shape or ref_mfcc.ndim != 1:
+            return ["MFCC 피드백 분석 실패: 잘못된 입력 형태입니다."]
+
+        diff = np.abs(ref_mfcc - user_mfcc)
+
+        feedback = []
+
+        low_band = np.mean(diff[:4])     # 저주파
+        mid_band = np.mean(diff[4:9])    # 중주파
+        high_band = np.mean(diff[9:])    # 고주파
+
+        threshold = 12.0  # ✅ 이전보다 높은 임계값
+        minor_threshold = 7.0  # ✅ 경고 수준
+
+        if low_band > threshold:
+            feedback.append("저주파 대역의 발음이 약합니다. 목소리를 깊이 내보세요.")
+        elif low_band > minor_threshold:
+            feedback.append("저주파 대역이 조금 약합니다. 안정감 있게 발음해보세요.")
+
+        if mid_band > threshold:
+            feedback.append("중간 대역의 발음이 불안정합니다. 천천히 또박또박 발음해보세요.")
+        elif mid_band > minor_threshold:
+            feedback.append("중간 대역이 다소 흔들립니다. 리듬을 유지해보세요.")
+
+        if high_band > threshold:
+            feedback.append("고주파 대역의 발음이 날카롭지 못합니다. 끝음을 또렷하게 해보세요.")
+        elif high_band > minor_threshold:
+            feedback.append("고주파 대역이 다소 흐릿합니다. 발음을 명확히 해보세요.")
+        return feedback
 
     @staticmethod
     async def transcribe_with_etri(file_path, script=""):
