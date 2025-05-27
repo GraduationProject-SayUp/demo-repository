@@ -15,7 +15,7 @@ model = PronunciationModel()
 
 SCORE_HISTORY = {}
 
-STANDARD_AUDIO_PATH = "data/standard_pronunciation.wav"
+#STANDARD_AUDIO_PATH = "data/standard_pronunciation.wav"
 
 @router.post("/evaluate-pronunciation")
 async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(...), user_id: str = Form(...)):
@@ -43,7 +43,7 @@ async def evaluate_pronunciation(file: UploadFile = File(...), text: str = Form(
         audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
         audio.export(processed_audio, format="wav")
 
-        ref_mfcc = model.extract_mfcc(STANDARD_AUDIO_PATH)
+        ref_mfcc = model.extract_mfcc(REFERENCE_AUDIO_PATH)
         user_mfcc = model.extract_mfcc(processed_audio)
 
         # from models import PronunciationModel
